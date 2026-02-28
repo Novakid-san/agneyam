@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ISRO Telemetry Monitor</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body{
+  margin:0;
+  background:#0b1120;
+  color:#00ffd5;
+  font-family:Arial, sans-serif;
+  overflow:hidden;
+}
+
+#header{
+  height:50px;
+  background:#101826;
+  display:flex;
+  align-items:center;
+  padding-left:20px;
+  border-bottom:2px solid #00ffd5;
+  font-size:18px;
+  font-weight:bold;
+}
+
+#layout{
+  display:grid;
+  grid-template-columns: 40% 60%;
+  height:calc(100vh - 50px);
+}
+
+#leftPanel{
+  background:#111a2c;
+  padding:20px;
+  border-right:1px solid #00ffd533;
+  overflow:hidden;
+}
+
+#rightPanel{
+  background:#000;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+}
+
+.graph{
+  height:130px !important;
+  margin-top:15px;
+}
+
+.valueRow{
+  margin-bottom:8px;
+  font-size:15px;
+}
+
+h3{
+  margin-top:0;
+  margin-bottom:15px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="header">
+🛰 ISRO TELEMETRY – LIVE 3D THERMAL MONITOR
+</div>
+
+<div id="layout">
+
+<!-- LEFT SIDE -->
+<div id="leftPanel">
+
+  <h3>Satellite Telemetry</h3>
+
+  <div class="valueRow">Status: <span id="status">OFFLINE</span></div>
+  <div class="valueRow">Total Power: <span id="power">--</span></div>
+  <div class="valueRow">Tilt: <span id="tilt">--</span></div>
+  <div class="valueRow">Velocity: <span id="velocity">--</span></div>
+
+  <canvas id="powerChart" class="graph"></canvas>
+  <canvas id="tiltChart" class="graph"></canvas>
+
+</div>
+
+<!-- RIGHT SIDE -->
+<div id="rightPanel"></div>
+
+</div>
+
+<script>
+
+/* ================= CHARTS ================= */
+
+function createChart(id,color,label){
+  return new Chart(document.getElementById(id),{
+    type:'line',
+    data:{labels:[],datasets:[{
+      label:label,
+      data:[],
+      borderColor:color,
+      borderWidth:2,
+      tension:0.3
+    }]},
+    options:{
+      animation:false,
+      plugins:{legend:{labels:{color:'#00ffd5'}}},
+      scales:{
+        x:{display:false},
+        y:{ticks:{color:'#00ffd5'}}
+      }
+    }
+  });
+}
+
+let powerChart=createChart("powerChart","#00ffd5","Total Power");
+let tiltChart=createChart("tiltChart","#ff00ff","Tilt");
+
+function updateChart(chart,value){
+  if(chart.data.labels.length>30){
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.data.labels.push("");
+  chart.data.datasets[0].data.push(value);
+  chart.update();
+}
+
+
+/* ================= 3D SURFACE ================= */
+
+let scene=new THREE.Scene();
+let camera=new THREE.PerspectiveCamera(60,1,0.1,1000);
+let renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setClearColor(0x000000);
+
+let container=document.getElementById("rightPanel");
+container.appendChild(renderer.domElement);
+
+function resizeSurface(){
+  renderer.setSize(container.clientWidth,container.clientHeight);
+  camera.aspect=container.clientWidth/container.clientHeight;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize",resizeSurface);
+resizeSurface();
+
+camera.position.set(35,35,35);
+let controls=new THREE.OrbitControls(camera,renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff,0.6));
+scene.add(new THREE.PointLight(0xffffff,1));
+
+scene.add(new THREE.GridHelper(40,20));
+scene.add(new THREE.AxesHelper(20));
+
+let geometry=new THREE.PlaneGeometry(40,40,60,60);
+geometry.rotateX(-Math.PI/2);
+
+let colors=[];
+for(let i=0;i<geometry.attributes.position.count;i++){
+  colors.push(0,0,1);
+}
+geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+
+let material=new THREE.MeshStandardMaterial({vertexColors:true});
+let surface=new THREE.Mesh(geometry,material);
+scene.add(surface);
+
+function animate3D(){
+  requestAnimationFrame(animate3D);
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate3D();
+
+
+/* ================= FETCH DATA ================= */
+
+let lastUpdate=0;
+
+async function fetchData(){
+  try{
+    let res=await fetch("http://100.192.20.157:5000/data");
+    let data=await res.json();
+
+    if(data.TotalPower!==undefined){
+
+      lastUpdate=Date.now();
+      document.getElementById("status").innerText="LIVE";
+      document.getElementById("power").innerText=data.TotalPower.toFixed(2);
+      document.getElementById("tilt").innerText=data.Tilt.toFixed(2);
+      document.getElementById("velocity").innerText=data.Velocity.toFixed(2);
+
+      updateChart(powerChart,data.TotalPower);
+      updateChart(tiltChart,data.Tilt);
+
+      let pos=geometry.attributes.position;
+      let col=geometry.attributes.color;
+
+      for(let i=0;i<pos.count;i++){
+        let x=pos.getX(i);
+        let z=pos.getZ(i);
+        let height=Math.sin(x*0.2+data.TotalPower)*4 +
+                    Math.cos(z*0.2+data.TotalPower)*4;
+
+        pos.setY(i,height);
+
+        let r=Math.min(1,Math.max(0,(data.TotalPower-0.5)/2));
+        col.setXYZ(i,r,1-r,1-r);
+      }
+
+      pos.needsUpdate=true;
+      col.needsUpdate=true;
+    }
+  }catch(e){}
+
+  if(Date.now()-lastUpdate>3000){
+    document.getElementById("status").innerText="OFFLINE";
+  }
+}
+
+setInterval(fetchData,500);
+
+</script>
+
+</body>
+</html>

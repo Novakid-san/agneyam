@@ -1,0 +1,210 @@
+#include <EEPROM.h>
+
+#define NUM_PHOTODETECTORS 32
+#define MAX_CALIBRATIONS 10
+#define TOLERANCE 20
+#define NAME_LENGTH 20
+
+const int photodetectorPin = A0;
+
+int photodetectorValues[NUM_PHOTODETECTORS];
+
+// Calibration storage (RAM)
+int calibValues[MAX_CALIBRATIONS];
+char calibNames[MAX_CALIBRATIONS][NAME_LENGTH];
+int calibCount = 0;
+
+// Calibration states
+bool calibrationMode = false;
+bool waitingSN = false;
+bool waitingTime = false;
+bool readingActive = false;
+bool waitingNotedValue = false;
+bool waitingName = false;
+
+unsigned long readStartTime = 0;
+unsigned long readDuration = 0;
+
+int manualValue = 0;
+String input = "";
+
+/* ================= EEPROM FUNCTIONS ================= */
+
+void loadFromEEPROM() {
+  calibCount = EEPROM.read(0);
+  if (calibCount > MAX_CALIBRATIONS) calibCount = 0;
+
+  int addr = 1;
+  for (int i = 0; i < calibCount; i++) {
+    EEPROM.get(addr, calibValues[i]);
+    addr += sizeof(int);
+
+    for (int j = 0; j < NAME_LENGTH; j++) {
+      calibNames[i][j] = EEPROM.read(addr++);
+    }
+  }
+
+  Serial.print("Loaded ");
+  Serial.print(calibCount);
+  Serial.println(" calibrations from EEPROM");
+}
+
+void saveToEEPROM() {
+  EEPROM.write(0, calibCount);
+
+  int addr = 1;
+  for (int i = 0; i < calibCount; i++) {
+    EEPROM.put(addr, calibValues[i]);
+    addr += sizeof(int);
+
+    for (int j = 0; j < NAME_LENGTH; j++) {
+      EEPROM.write(addr++, calibNames[i][j]);
+    }
+  }
+}
+
+/* ================= SETUP ================= */
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("System Booting...");
+
+  loadFromEEPROM();
+
+  Serial.println("Type 'calibrate' to start calibration");
+}
+
+/* ================= LOOP ================= */
+
+void loop() {
+
+  /* ---------- SERIAL INPUT ---------- */
+  if (Serial.available()) {
+    input = Serial.readStringUntil('\n');
+    input.trim();
+
+    if (input.equalsIgnoreCase("calibrate") && !calibrationMode) {
+      calibrationMode = true;
+      waitingSN = true;
+      Serial.println("Calibration Mode ON");
+      Serial.println("Read photodetector? (s/n)");
+      return;
+    }
+
+    if (waitingSN) {
+      if (input.equalsIgnoreCase("s")) {
+        waitingSN = false;
+        waitingTime = true;
+        Serial.println("Enter reading time (1–60 seconds):");
+      } else {
+        calibrationMode = false;
+        waitingSN = false;
+        Serial.println("Calibration cancelled");
+      }
+      return;
+    }
+
+    if (waitingTime) {
+      int sec = input.toInt();
+      if (sec >= 1 && sec <= 60) {
+        waitingTime = false;
+        readingActive = true;
+        readDuration = sec * 1000UL;
+        readStartTime = millis();
+        Serial.print("Live reading for ");
+        Serial.print(sec);
+        Serial.println(" seconds...");
+      } else {
+        Serial.println("Invalid time (1–60)");
+      }
+      return;
+    }
+
+    if (waitingNotedValue) {
+      manualValue = input.toInt();
+      waitingNotedValue = false;
+      waitingName = true;
+      Serial.println("Assign molecule name:");
+      return;
+    }
+
+    if (waitingName) {
+      if (calibCount < MAX_CALIBRATIONS) {
+        calibValues[calibCount] = manualValue;
+        input.toCharArray(calibNames[calibCount], NAME_LENGTH);
+        calibCount++;
+        saveToEEPROM();
+
+        Serial.print("Calibration saved: ");
+        Serial.println(input);
+      } else {
+        Serial.println("Calibration memory full!");
+      }
+
+      waitingName = false;
+      calibrationMode = false;
+      Serial.println("Exited calibration mode");
+      return;
+    }
+  }
+
+  /* ---------- CALIBRATION MODE ---------- */
+  if (calibrationMode) {
+    if (readingActive) {
+      if (millis() - readStartTime < readDuration) {
+
+        int liveValue = analogRead(photodetectorPin);
+        String detected = "Unknown";
+
+        for (int i = 0; i < calibCount; i++) {
+          if (abs(liveValue - calibValues[i]) <= TOLERANCE) {
+            detected = calibNames[i];
+            break;
+          }
+        }
+
+        Serial.print("Live value: ");
+        Serial.print(liveValue);
+        Serial.print(" -> ");
+        Serial.println(detected);
+
+        delay(200);
+      } else {
+        readingActive = false;
+        waitingNotedValue = true;
+        Serial.println("Reading time over");
+        Serial.println("Enter noted value:");
+      }
+    }
+    return; // block normal operation
+  }
+
+  /* ---------- NORMAL OPERATION ---------- */
+
+  for (int i = 0; i < NUM_PHOTODETECTORS; i++) {
+    photodetectorValues[i] = (i == 0) ? analogRead(photodetectorPin) : 0;
+  }
+
+  Serial.print("Photodetector Row: ");
+  for (int i = 0; i < NUM_PHOTODETECTORS; i++) {
+    Serial.print(photodetectorValues[i]);
+    if (i < NUM_PHOTODETECTORS - 1) Serial.print(", ");
+  }
+  Serial.println();
+
+  String detected = "Unknown";
+  int currentValue = photodetectorValues[0];
+
+  for (int i = 0; i < calibCount; i++) {
+    if (abs(currentValue - calibValues[i]) <= TOLERANCE) {
+      detected = calibNames[i];
+      break;
+    }
+  }
+
+  Serial.print("Detected Molecule: ");
+  Serial.println(detected);
+  Serial.println("--------------------------------");
+
+  delay(700);
+}
